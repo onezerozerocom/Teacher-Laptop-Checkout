@@ -1,5 +1,5 @@
 // ▼ Apps Script 웹 앱 배포 후 받은 주소(.../exec)를 여기에 붙여 넣으세요.
-const API_URL = "여기에_웹앱_URL을_붙여넣으세요";
+const API_URL = "https://script.google.com/macros/s/AKfycbwMbzaPHPXxxLx_-z4s5ExttCM2ooFd7Y-1Qa-bC6XsM3f19lGU9O23TukZ8i20u8NRDg/exec";
 
 (function () {
   const COUNT = 15;
