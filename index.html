@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>교육정보부 노트북 대여</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <span class="dept">교사용 노트북 대여 · 반납</span>
+    <h1>교육정보부 노트북 대여 관리</h1>
+    <span class="today" id="today"></span>
+  </header>
+
+  <div class="notice" id="notice" hidden></div>
+
+  <section class="summary" aria-label="현황 요약">
+    <div class="stat ok"><span class="k">대여 가능</span><span class="v" id="s-ok">–<small>대</small></span></div>
+    <div class="stat busy"><span class="k">대여 중</span><span class="v" id="s-busy">–<small>대</small></span></div>
+    <div class="stat late"><span class="k">반납 지연</span><span class="v" id="s-late">–<small>대</small></span></div>
+  </section>
+
+  <section aria-labelledby="board-title">
+    <div class="section-head">
+      <h2 id="board-title">노트북 현황</h2>
+      <span class="hint">카드를 누르면 대여 또는 반납할 수 있습니다</span>
+    </div>
+    <div class="board" id="board"></div>
+  </section>
+
+  <section aria-labelledby="log-title">
+    <div class="section-head">
+      <h2 id="log-title">대여 · 반납 기록</h2>
+      <span class="hint">최신순 · 최근 100건</span>
+    </div>
+    <div class="log" id="log">
+      <div class="log-row head"><span>일시</span><span>기기</span><span>교사</span><span>구분</span></div>
+      <div class="empty" id="log-empty">기록을 불러오는 중입니다.</div>
+    </div>
+  </section>
+
+  <footer>교사 이름과 반납 예정일만 저장합니다. 전화번호 등 개인정보는 받지 않습니다.</footer>
+</div>
+
+<div class="overlay" id="overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="m-title" id="modal"></div>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+<script src="script.js"></script>
+</body>
+</html>
