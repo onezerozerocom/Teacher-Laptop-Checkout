@@ -1,17 +1,18 @@
+// ▼ Apps Script 웹 앱 배포 후 받은 주소(.../exec)를 여기에 붙여 넣으세요.
+const API_URL = "여기에_웹앱_URL을_붙여넣으세요";
+
 (function () {
   const COUNT = 15;
   const WEEK = ["일", "월", "화", "수", "목", "금", "토"];
-  const tabId = "tab-" + Math.random().toString(36).slice(2, 10);
+  const REFRESH_MS = 15 * 1000; // 다른 선생님의 변경 사항을 가져오는 주기
 
-  let db = null;
-  let laptops = {};        // 번호 -> 문서 내용
+  let laptops = {};        // 번호 -> { status, teacher, due }
   let loaded = false;
-  let readOnly = false;
   let busyOp = false;
+  let lastJson = "";
 
   const $ = (id) => document.getElementById(id);
   const pad = (n) => String(n).padStart(2, "0");
-  const docId = (n) => "laptop-" + pad(n);
 
   function todayStr() {
     const d = new Date();
@@ -25,13 +26,13 @@
   function fmtDue(s) {
     if (!s) return "";
     const [y, m, d] = s.split("-").map(Number);
+    if (!y || !m || !d) return s;
     const w = WEEK[new Date(y, m - 1, d).getDay()];
     return m + "월 " + d + "일(" + w + ")";
   }
-  function fmtAt(iso) {
-    const d = new Date(iso);
-    if (isNaN(d)) return "";
-    return d.getFullYear() + "." + pad(d.getMonth() + 1) + "." + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  function fmtAt(s) {
+    // 시트에는 "2026-09-28 14:05" 형식으로 저장됩니다.
+    return String(s || "").replace(/-/g, ".");
   }
   function isLate(l) { return l && l.status === "rented" && l.due && l.due < todayStr(); }
 
@@ -65,7 +66,7 @@
       const b = document.createElement("button");
       b.type = "button";
       b.className = "card " + (!loaded ? "loading" : rented ? "busy" + (lt ? " late" : "") : "ok");
-      b.disabled = !loaded || !db;
+      b.disabled = !loaded;
 
       const no = document.createElement("span");
       no.className = "no";
@@ -87,17 +88,14 @@
         due.textContent = (lt ? "반납 지연 · " : "반납 예정 ") + fmtDue(l.due);
         b.append(who, due);
       }
-      if (loaded && db && !readOnly) {
+      if (loaded) {
         const act = document.createElement("span");
         act.className = "act";
         act.textContent = rented ? "반납하기 →" : "대여하기 →";
         b.append(act);
       }
       b.setAttribute("aria-label", "노트북 " + n + "번, " + pill.textContent + (rented ? ", " + l.teacher + " 선생님, 반납 예정 " + fmtDue(l.due) : ""));
-      b.addEventListener("click", () => {
-        if (readOnly) { showToast("대여·반납 권한이 없습니다. 교육정보부에 문의하세요."); return; }
-        rented ? openReturn(n) : openRent(n);
-      });
+      b.addEventListener("click", () => { rented ? openReturn(n) : openRent(n); });
       board.append(b);
     }
     const unit = "<small>대</small>";
@@ -197,7 +195,7 @@
         ok.textContent = "저장 중…";
         busyOp = true;
         try {
-          await rent(n, name, due);
+          await send({ action: "rent", device: n, teacher: name, due: due });
           busyOp = false;
           closeModal();
           showToast("노트북 " + pad(n) + "번을 대여했습니다. 반납일: " + fmtDue(due));
@@ -230,7 +228,7 @@
         ok.textContent = "저장 중…";
         busyOp = true;
         try {
-          await giveBack(n);
+          await send({ action: "return", device: n });
           busyOp = false;
           closeModal();
           showToast("노트북 " + pad(n) + "번을 반납했습니다.");
@@ -250,93 +248,83 @@
     const code = x && x.code;
     if (code === "taken") return "방금 다른 선생님이 이 노트북을 대여했습니다. 다른 노트북을 선택해 주세요.";
     if (code === "already_returned") return "이미 반납된 노트북입니다.";
-    if (code === "busy") return "다른 분이 같은 노트북을 처리하고 있습니다. 잠시 후 다시 눌러 주세요.";
-    if (code === "invalid_argument") {
-      readOnly = true;
-      renderBoard();
-      return "대여·반납 권한이 없습니다. 교육정보부에 '참여자' 권한을 요청해 주세요.";
-    }
-    if (code === "quota_exceeded") return "저장 공간이 가득 찼습니다. 교육정보부에 알려 주세요.";
+    if (code === "busy") return "다른 분이 동시에 저장하고 있습니다. 잠시 후 다시 눌러 주세요.";
+    if (code === "bad_name") return "교사 이름은 1~20자로 입력해 주세요.";
+    if (code === "bad_date") return "반납 예정일은 오늘 이후로 선택해 주세요.";
+    if (code === "not_setup") return "구글 시트 준비가 끝나지 않았습니다. 교육정보부에 알려 주세요.";
     return "저장하지 못했습니다. 인터넷 연결을 확인한 뒤 다시 시도해 주세요.";
   }
 
-  // ---------- 저장 ----------
-  async function withLock(n, fn) {
-    const ref = db.doc("laptops/" + docId(n));
-    const lease = await ref.acquire({ holder: tabId, ttlMs: 8000 });
-    if (!lease.acquired) throw { code: "busy" };
-    const snap = await ref.get();
-    const cur = snap.exists ? snap.data() || {} : {};
-    return fn(ref, cur);
+  // ---------- 구글 시트 연동 ----------
+  const configured = /^https:\/\/script\.google\.com\//.test(API_URL);
+
+  function applyState(state) {
+    if (!state) return;
+    const json = JSON.stringify(state);
+    if (json === lastJson && loaded) return; // 바뀐 게 없으면 다시 그리지 않음
+    lastJson = json;
+    const next = {};
+    (state.laptops || []).forEach((l) => { if (l.no >= 1 && l.no <= COUNT) next[l.no] = l; });
+    laptops = next;
+    loaded = true;
+    renderBoard();
+    renderLog(state.logs || []);
   }
 
-  async function rent(n, name, due) {
-    const at = new Date().toISOString();
-    await withLock(n, async (ref, cur) => {
-      if (cur.status === "rented") throw { code: "taken" };
-      await ref.set({ no: n, status: "rented", teacher: name, due: due, rentedAt: at });
-    });
-    await db.collection("logs").add({ at: at, device: n, teacher: name, type: "rent" });
+  async function load() {
+    try {
+      const res = await fetch(API_URL, { cache: "no-store" });
+      const data = await res.json();
+      if (!data.ok) throw data;
+      applyState(data.state);
+      showNotice("");
+    } catch (x) {
+      if (x && x.error === "not_setup") showNotice("구글 시트 준비가 끝나지 않았습니다. Apps Script에서 setup을 먼저 실행해 주세요.");
+      else if (!loaded) showNotice("현황을 불러오지 못했습니다. 인터넷 연결을 확인하고 페이지를 새로 고쳐 주세요.");
+      if (!loaded) $("log-empty") && ($("log-empty").textContent = "기록을 불러올 수 없습니다.");
+    }
   }
 
-  async function giveBack(n) {
-    const at = new Date().toISOString();
-    let teacher = "";
-    await withLock(n, async (ref, cur) => {
-      if (cur.status !== "rented") throw { code: "already_returned" };
-      teacher = cur.teacher || "";
-      await ref.set({ no: n, status: "available", returnedAt: at });
-    });
-    await db.collection("logs").add({ at: at, device: n, teacher: teacher, type: "return" });
+  async function send(body) {
+    let data;
+    try {
+      // text/plain으로 보내야 Apps Script가 브라우저 사전 요청(CORS) 없이 받습니다.
+      const res = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify(body),
+      });
+      data = await res.json();
+    } catch (_) {
+      throw { code: "network" };
+    }
+    if (!data.ok) {
+      load(); // 다른 사람이 먼저 바꿨을 수 있으니 최신 현황으로 갱신
+      throw { code: data.error };
+    }
+    applyState(data.state);
   }
 
   // ---------- 시작 ----------
   renderBoard();
 
-  (async function start() {
-    const cl = window.claude;
-    db = cl && cl.use ? await cl.use("db").catch(() => null) : null;
-    if (!db) {
-      showNotice("공유 저장소에 연결할 수 없어 현황을 불러오지 못했습니다. 페이지를 새로 고치거나 교육정보부에 문의해 주세요.");
-      $("log-empty").textContent = "기록을 불러올 수 없습니다.";
-      return;
-    }
+  if (!configured) {
+    showNotice("저장소 주소가 설정되지 않았습니다. script.js 맨 위의 API_URL에 Apps Script 웹 앱 주소를 넣어 주세요.");
+    $("log-empty").textContent = "기록을 불러올 수 없습니다.";
+    return;
+  }
 
-    const user = await (cl.use("user").catch(() => null));
-    if (user && typeof user.can === "function") {
-      try {
-        const w = await user.can("data.write");
-        if (w === false) {
-          readOnly = true;
-          showNotice("보기 전용으로 접속했습니다. 대여·반납하려면 교육정보부에 '참여자' 권한을 요청해 주세요.");
-        }
-      } catch (_) {}
-    }
+  load();
+  setInterval(() => {
+    if (document.visibilityState === "visible" && !busyOp) load();
+  }, REFRESH_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") load();
+  });
 
-    db.collection("laptops").onSnapshot((snap) => {
-      const next = {};
-      snap.docs.forEach((d) => {
-        const v = d.data() || {};
-        const n = Number(v.no) || Number(d.id.replace("laptop-", ""));
-        if (n >= 1 && n <= COUNT) next[n] = v;
-      });
-      laptops = next;
-      loaded = true;
-      renderBoard();
-    }, () => {
-      showNotice("현황 연결이 끊어졌습니다. 페이지를 새로 고쳐 주세요.");
-    });
-
-    db.collection("logs").orderBy("at", "desc").limit(100).onSnapshot((snap) => {
-      renderLog(snap.docs.map((d) => d.data() || {}));
-    }, () => {
-      $("log-empty") && ($("log-empty").textContent = "기록을 불러올 수 없습니다.");
-    });
-
-    // 날짜가 바뀌면 지연 표시를 다시 계산
-    let day = todayStr();
-    setInterval(() => {
-      if (todayStr() !== day) { day = todayStr(); if (loaded) renderBoard(); }
-    }, 60 * 1000);
-  })();
+  // 날짜가 바뀌면 지연 표시를 다시 계산
+  let day = todayStr();
+  setInterval(() => {
+    if (todayStr() !== day) { day = todayStr(); if (loaded) renderBoard(); }
+  }, 60 * 1000);
 })();
